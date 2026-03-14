@@ -140,6 +140,9 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('?') => {
                         app.mode = Mode::Help;
                     }
+                    KeyCode::Char('r') => {
+                        let _ = app.refresh();
+                    }
                     KeyCode::Char('a') => {
                         app.add_input.clear();
                         app.mode = Mode::Add;
@@ -340,6 +343,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Span::raw(" complete  "),
             Span::styled("a", Style::default().fg(Color::Cyan)),
             Span::raw(" add  "),
+            Span::styled("r", Style::default().fg(Color::Cyan)),
+            Span::raw(" refresh  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("/", Style::default().fg(Color::Cyan)),
@@ -381,6 +386,10 @@ fn draw_help(frame: &mut ratatui::Frame) {
         Line::from(vec![
             Span::styled("  a         ", Style::default().fg(Color::Cyan)),
             Span::raw("Add new reminder"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r         ", Style::default().fg(Color::Cyan)),
+            Span::raw("Refresh from Reminders.app"),
         ]),
         Line::from(vec![
             Span::styled("  d         ", Style::default().fg(Color::Cyan)),

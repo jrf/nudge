@@ -1,3 +1,5 @@
 .DS_Store
 Cargo.lock
 /target
+swift-bridge/.build
+swift-bridge/.swiftpm
