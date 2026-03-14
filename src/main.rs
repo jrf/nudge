@@ -1,4 +1,5 @@
 mod reminders;
+mod theme;
 mod tui;
 
 use anyhow::Result;
@@ -7,6 +8,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(about = "Apple Reminders from your terminal.")]
 struct Cli {
+    /// Color theme (synthwave, monochrome, ocean, sunset, forest, tokyo night moon)
+    #[arg(long, default_value = "synthwave")]
+    theme: String,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -77,8 +82,13 @@ fn format_reminder(r: &reminders::Reminder) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let theme = theme::find_theme(&cli.theme).unwrap_or_else(|| {
+        eprintln!("Unknown theme '{}', using synthwave", cli.theme);
+        theme::default_theme()
+    });
+
     match cli.command {
-        None => tui::run(),
+        None => tui::run(theme),
         Some(cmd) => match cmd {
             Commands::List { list, all } => {
                 let items = reminders::list_reminders(list.as_deref(), all)?;

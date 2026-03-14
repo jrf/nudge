@@ -113,6 +113,11 @@ pub fn delete_reminder(name: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn move_reminder(id: &str, to_list: &str) -> Result<()> {
+    run_bridge(&["move", id, "--list", to_list])?;
+    Ok(())
+}
+
 pub fn list_lists() -> Result<Vec<String>> {
     let output = run_bridge(&["lists"])?;
     if output.is_empty() {

@@ -174,6 +174,31 @@ func deleteReminder(name: String) {
     print("ok")
 }
 
+func moveReminder(id: String, toList: String) {
+    guard let calendar = store.calendars(for: .reminder).first(where: { $0.title == toList }) else {
+        fputs("Error: list '\(toList)' not found\n", stderr)
+        exit(1)
+    }
+
+    let predicate = store.predicateForReminders(in: nil)
+    let sem = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var results: [EKReminder] = []
+    store.fetchReminders(matching: predicate) { reminders in
+        results = reminders ?? []
+        sem.signal()
+    }
+    sem.wait()
+
+    guard let r = results.first(where: { $0.calendarItemIdentifier == id }) else {
+        fputs("Error: no reminder with id '\(id)'\n", stderr)
+        exit(1)
+    }
+
+    r.calendar = calendar
+    try! store.save(r, commit: true)
+    print("ok")
+}
+
 // --- Main ---
 
 guard requestAccess() else {
@@ -243,6 +268,12 @@ case "delete":
         exit(1)
     }
     deleteReminder(name: args[1])
+case "move":
+    guard args.count > 3, args[2] == "--list" else {
+        fputs("Usage: nudge-bridge move <id> --list <list>\n", stderr)
+        exit(1)
+    }
+    moveReminder(id: args[1], toList: args[3])
 default:
     fputs("Unknown command: \(command)\n", stderr)
     exit(1)
