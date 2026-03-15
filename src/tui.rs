@@ -1,3 +1,4 @@
+use crate::config;
 use crate::reminders::{self, Reminder};
 use crate::theme::{self, Theme};
 use anyhow::Result;
@@ -299,8 +300,12 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Enter => {
-                        app.theme = theme::ALL_THEMES[app.theme_selected].1;
+                        let (name, selected_theme) = theme::ALL_THEMES[app.theme_selected];
+                        app.theme = selected_theme;
                         app.mode = Mode::Browse;
+                        let mut cfg = config::load();
+                        cfg.theme = Some(name.to_string());
+                        let _ = config::save(&cfg);
                     }
                     _ => {}
                 },

@@ -1,3 +1,4 @@
+mod config;
 mod reminders;
 mod theme;
 mod tui;
@@ -82,8 +83,18 @@ fn format_reminder(r: &reminders::Reminder) -> String {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let theme = theme::find_theme(&cli.theme).unwrap_or_else(|| {
-        eprintln!("Unknown theme '{}', using synthwave", cli.theme);
+    let cfg = config::load();
+
+    let theme_name = if cli.theme != "synthwave" {
+        cli.theme.clone()
+    } else if let Some(ref saved) = cfg.theme {
+        saved.clone()
+    } else {
+        cli.theme.clone()
+    };
+
+    let theme = theme::find_theme(&theme_name).unwrap_or_else(|| {
+        eprintln!("Unknown theme '{}', using synthwave", theme_name);
         theme::default_theme()
     });
 
