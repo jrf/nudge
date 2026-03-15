@@ -59,6 +59,33 @@ enum Commands {
     },
     /// List all reminder lists
     Lists,
+    /// Manage reminder lists
+    #[command(name = "list")]
+    ListManage {
+        #[command(subcommand)]
+        action: ListAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ListAction {
+    /// Create a new list
+    New {
+        /// List name
+        name: String,
+    },
+    /// Rename a list
+    Rename {
+        /// Current list name
+        old: String,
+        /// New list name
+        new: String,
+    },
+    /// Delete a list
+    Delete {
+        /// List name
+        name: String,
+    },
 }
 
 fn format_reminder(r: &reminders::Reminder) -> String {
@@ -151,6 +178,23 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             }
+            Commands::ListManage { action } => match action {
+                ListAction::New { name } => {
+                    reminders::create_list(&name)?;
+                    println!("Created list: {name}");
+                    Ok(())
+                }
+                ListAction::Rename { old, new } => {
+                    reminders::rename_list(&old, &new)?;
+                    println!("Renamed list: {old} -> {new}");
+                    Ok(())
+                }
+                ListAction::Delete { name } => {
+                    reminders::delete_list(&name)?;
+                    println!("Deleted list: {name}");
+                    Ok(())
+                }
+            },
         },
     }
 }

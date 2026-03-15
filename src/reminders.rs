@@ -118,6 +118,21 @@ pub fn move_reminder(id: &str, to_list: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn create_list(name: &str) -> Result<()> {
+    run_bridge(&["create-list", name])?;
+    Ok(())
+}
+
+pub fn rename_list(old_name: &str, new_name: &str) -> Result<()> {
+    run_bridge(&["rename-list", old_name, new_name])?;
+    Ok(())
+}
+
+pub fn delete_list(name: &str) -> Result<()> {
+    run_bridge(&["delete-list", name])?;
+    Ok(())
+}
+
 pub fn list_lists() -> Result<Vec<String>> {
     let output = run_bridge(&["lists"])?;
     if output.is_empty() {

@@ -199,6 +199,33 @@ func moveReminder(id: String, toList: String) {
     print("ok")
 }
 
+func createList(name: String) {
+    let calendar = EKCalendar(for: .reminder, eventStore: store)
+    calendar.title = name
+    calendar.source = store.defaultCalendarForNewReminders()!.source
+    try! store.saveCalendar(calendar, commit: true)
+    print("ok")
+}
+
+func renameList(oldName: String, newName: String) {
+    guard let calendar = store.calendars(for: .reminder).first(where: { $0.title == oldName }) else {
+        fputs("Error: list '\(oldName)' not found\n", stderr)
+        exit(1)
+    }
+    calendar.title = newName
+    try! store.saveCalendar(calendar, commit: true)
+    print("ok")
+}
+
+func deleteList(name: String) {
+    guard let calendar = store.calendars(for: .reminder).first(where: { $0.title == name }) else {
+        fputs("Error: list '\(name)' not found\n", stderr)
+        exit(1)
+    }
+    try! store.removeCalendar(calendar, commit: true)
+    print("ok")
+}
+
 // --- Main ---
 
 guard requestAccess() else {
@@ -274,6 +301,24 @@ case "move":
         exit(1)
     }
     moveReminder(id: args[1], toList: args[3])
+case "create-list":
+    guard args.count > 1 else {
+        fputs("Usage: nudge-bridge create-list <name>\n", stderr)
+        exit(1)
+    }
+    createList(name: args[1])
+case "rename-list":
+    guard args.count > 2 else {
+        fputs("Usage: nudge-bridge rename-list <old> <new>\n", stderr)
+        exit(1)
+    }
+    renameList(oldName: args[1], newName: args[2])
+case "delete-list":
+    guard args.count > 1 else {
+        fputs("Usage: nudge-bridge delete-list <name>\n", stderr)
+        exit(1)
+    }
+    deleteList(name: args[1])
 default:
     fputs("Unknown command: \(command)\n", stderr)
     exit(1)

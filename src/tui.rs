@@ -19,7 +19,13 @@ enum Mode {
     Help,
     ThemePicker,
     ListPicker,
+    ListInput(ListInputKind),
     MovePicker,
+}
+
+enum ListInputKind {
+    New,
+    Rename(String),
 }
 
 struct App {
@@ -38,6 +44,8 @@ struct App {
     list_selected: usize,
     active_list: Option<String>,
     move_selected: usize,
+    input_buf: String,
+    confirm_list_delete: bool,
 }
 
 impl App {
@@ -67,6 +75,8 @@ impl App {
             list_selected: 0,
             active_list: None,
             move_selected: 0,
+            input_buf: String::new(),
+            confirm_list_delete: false,
         }
     }
 
@@ -311,20 +321,21 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                 },
                 Mode::ListPicker => match key.code {
                     KeyCode::Esc | KeyCode::Char('g') => {
+                        app.confirm_list_delete = false;
                         app.mode = Mode::Browse;
                     }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        let total = app.lists.len() + 1; // +1 for "All"
+                    KeyCode::Char('j') | KeyCode::Down if !app.confirm_list_delete => {
+                        let total = app.lists.len() + 1;
                         if app.list_selected + 1 < total {
                             app.list_selected += 1;
                         }
                     }
-                    KeyCode::Char('k') | KeyCode::Up => {
+                    KeyCode::Char('k') | KeyCode::Up if !app.confirm_list_delete => {
                         if app.list_selected > 0 {
                             app.list_selected -= 1;
                         }
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter if !app.confirm_list_delete => {
                         if app.list_selected == 0 {
                             app.active_list = None;
                         } else {
@@ -333,6 +344,69 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         }
                         app.apply_filter();
                         app.mode = Mode::Browse;
+                    }
+                    KeyCode::Char('n') if !app.confirm_list_delete => {
+                        app.input_buf.clear();
+                        app.mode = Mode::ListInput(ListInputKind::New);
+                    }
+                    KeyCode::Char('r') if !app.confirm_list_delete => {
+                        if app.list_selected > 0 {
+                            let old_name = app.lists[app.list_selected - 1].clone();
+                            app.input_buf = old_name.clone();
+                            app.mode = Mode::ListInput(ListInputKind::Rename(old_name));
+                        }
+                    }
+                    KeyCode::Char('d') if !app.confirm_list_delete => {
+                        if app.list_selected > 0 {
+                            app.confirm_list_delete = true;
+                        }
+                    }
+                    KeyCode::Char('y') if app.confirm_list_delete => {
+                        if app.list_selected > 0 {
+                            let name = app.lists[app.list_selected - 1].clone();
+                            let _ = reminders::delete_list(&name);
+                            if app.active_list.as_deref() == Some(&name) {
+                                app.active_list = None;
+                            }
+                            app.load_lists();
+                            let _ = app.refresh();
+                            app.list_selected = 0;
+                        }
+                        app.confirm_list_delete = false;
+                    }
+                    _ => {
+                        app.confirm_list_delete = false;
+                    }
+                },
+                Mode::ListInput(ref kind) => match key.code {
+                    KeyCode::Esc => {
+                        app.mode = Mode::ListPicker;
+                    }
+                    KeyCode::Enter => {
+                        let name = app.input_buf.trim().to_string();
+                        if !name.is_empty() {
+                            match kind {
+                                ListInputKind::New => {
+                                    let _ = reminders::create_list(&name);
+                                }
+                                ListInputKind::Rename(old) => {
+                                    let _ = reminders::rename_list(old, &name);
+                                    if app.active_list.as_deref() == Some(old.as_str()) {
+                                        app.active_list = Some(name.clone());
+                                    }
+                                }
+                            }
+                            app.load_lists();
+                            let _ = app.refresh();
+                        }
+                        app.list_selected = 0;
+                        app.mode = Mode::ListPicker;
+                    }
+                    KeyCode::Backspace => {
+                        app.input_buf.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        app.input_buf.push(c);
                     }
                     _ => {}
                 },
@@ -505,7 +579,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     match app.mode {
         Mode::Help => draw_help(frame, t),
         Mode::ThemePicker => draw_theme_picker(frame, app),
-        Mode::ListPicker => draw_list_picker(frame, app),
+        Mode::ListPicker | Mode::ListInput(_) => draw_list_picker(frame, app),
         Mode::MovePicker => draw_move_picker(frame, app),
         _ => {}
     }
@@ -549,7 +623,7 @@ fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
         ]),
         Line::from(vec![
             Span::styled("  g         ", Style::default().fg(t.accent)),
-            Span::styled("Filter by list", Style::default().fg(t.text)),
+            Span::styled("Lists (n/r/d to manage)", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  t         ", Style::default().fg(t.accent)),
@@ -638,9 +712,13 @@ fn draw_theme_picker(frame: &mut ratatui::Frame, app: &App) {
 fn draw_list_picker(frame: &mut ratatui::Frame, app: &App) {
     let t = &app.theme;
     let area = frame.area();
-    let total = app.lists.len() + 1; // +1 for "All"
-    let height = (total as u16 + 4).min(area.height.saturating_sub(4));
-    let width = 30u16.min(area.width.saturating_sub(4));
+    let total = app.lists.len() + 1;
+    let extra = match app.mode {
+        Mode::ListInput(_) => 3,
+        _ => 2,
+    };
+    let height = (total as u16 + extra + 3).min(area.height.saturating_sub(4));
+    let width = 40u16.min(area.width.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -652,12 +730,49 @@ fn draw_list_picker(frame: &mut ratatui::Frame, app: &App) {
         Style::default().fg(t.text),
     ))];
 
-    entries.extend(app.lists.iter().map(|name| {
-        ListItem::new(Span::styled(
-            format!("  {name}"),
-            Style::default().fg(t.text),
-        ))
+    entries.extend(app.lists.iter().enumerate().map(|(i, name)| {
+        let style = if app.confirm_list_delete && app.list_selected == i + 1 {
+            Style::default().fg(t.error)
+        } else {
+            Style::default().fg(t.text)
+        };
+        ListItem::new(Span::styled(format!("  {name}"), style))
     }));
+
+    match &app.mode {
+        Mode::ListInput(kind) => {
+            let label = match kind {
+                ListInputKind::New => "New: ",
+                ListInputKind::Rename(_) => "Rename: ",
+            };
+            entries.push(ListItem::new(Line::from("")));
+            entries.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("  {label}"), Style::default().fg(t.accent)),
+                Span::styled(format!("{}_", app.input_buf), Style::default().fg(t.text_bright)),
+            ])));
+        }
+        _ => {
+            let hints = if app.confirm_list_delete {
+                vec![
+                    Span::styled(" Delete? ", Style::default().fg(t.error)),
+                    Span::styled("y", Style::default().fg(t.accent)),
+                    Span::styled("/", Style::default().fg(t.text_dim)),
+                    Span::styled("n", Style::default().fg(t.accent)),
+                ]
+            } else {
+                vec![
+                    Span::styled(" n", Style::default().fg(t.accent)),
+                    Span::styled("ew ", Style::default().fg(t.text_dim)),
+                    Span::styled("r", Style::default().fg(t.accent)),
+                    Span::styled("ename ", Style::default().fg(t.text_dim)),
+                    Span::styled("d", Style::default().fg(t.accent)),
+                    Span::styled("elete", Style::default().fg(t.text_dim)),
+                ]
+            };
+            entries.push(ListItem::new(Line::from("")));
+            entries.push(ListItem::new(Line::from(hints)));
+        }
+    }
 
     let mut state = ListState::default();
     state.select(Some(app.list_selected));
