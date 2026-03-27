@@ -2,7 +2,7 @@ use crate::config;
 use crate::reminders::{self, Reminder};
 use crate::theme::{self, Theme};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -135,6 +135,31 @@ impl App {
         }
     }
 
+    fn move_to_top(&mut self) {
+        if !self.filtered.is_empty() {
+            self.list_state.select(Some(0));
+        }
+    }
+
+    fn move_to_bottom(&mut self) {
+        if !self.filtered.is_empty() {
+            self.list_state.select(Some(self.filtered.len() - 1));
+        }
+    }
+
+    fn page_up(&mut self) {
+        if let Some(selected) = self.list_state.selected() {
+            self.list_state.select(Some(selected.saturating_sub(10)));
+        }
+    }
+
+    fn page_down(&mut self) {
+        if let Some(selected) = self.list_state.selected() {
+            let last = self.filtered.len().saturating_sub(1);
+            self.list_state.select(Some((selected + 10).min(last)));
+        }
+    }
+
     fn refresh(&mut self) -> Result<()> {
         self.reminders = reminders::list_reminders(None, false)?;
         self.apply_filter();
@@ -178,6 +203,16 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                     KeyCode::Char('j') | KeyCode::Down => app.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_up(),
+                    KeyCode::Char('G') | KeyCode::End => app.move_to_bottom(),
+                    KeyCode::Char('g') | KeyCode::Home => app.move_to_top(),
+                    KeyCode::PageDown => app.page_down(),
+                    KeyCode::PageUp => app.page_up(),
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.page_down()
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.page_up()
+                    }
                     KeyCode::Char('/') => {
                         app.mode = Mode::Search;
                     }
@@ -195,7 +230,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                             app.mode = Mode::MovePicker;
                         }
                     }
-                    KeyCode::Char('g') => {
+                    KeyCode::Char('f') => {
                         app.load_lists();
                         app.list_selected = match &app.active_list {
                             Some(name) => app
@@ -309,6 +344,23 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                             app.theme = theme::ALL_THEMES[app.theme_selected].1;
                         }
                     }
+                    KeyCode::Char('G') | KeyCode::End => {
+                        app.theme_selected = theme::ALL_THEMES.len() - 1;
+                        app.theme = theme::ALL_THEMES[app.theme_selected].1;
+                    }
+                    KeyCode::Home => {
+                        app.theme_selected = 0;
+                        app.theme = theme::ALL_THEMES[app.theme_selected].1;
+                    }
+                    KeyCode::PageDown => {
+                        app.theme_selected =
+                            (app.theme_selected + 10).min(theme::ALL_THEMES.len() - 1);
+                        app.theme = theme::ALL_THEMES[app.theme_selected].1;
+                    }
+                    KeyCode::PageUp => {
+                        app.theme_selected = app.theme_selected.saturating_sub(10);
+                        app.theme = theme::ALL_THEMES[app.theme_selected].1;
+                    }
                     KeyCode::Enter => {
                         let (name, selected_theme) = theme::ALL_THEMES[app.theme_selected];
                         app.theme = selected_theme;
@@ -320,7 +372,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     _ => {}
                 },
                 Mode::ListPicker => match key.code {
-                    KeyCode::Esc | KeyCode::Char('g') => {
+                    KeyCode::Esc | KeyCode::Char('f') => {
                         app.confirm_list_delete = false;
                         app.mode = Mode::Browse;
                     }
@@ -334,6 +386,18 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         if app.list_selected > 0 {
                             app.list_selected -= 1;
                         }
+                    }
+                    KeyCode::Char('G') | KeyCode::End if !app.confirm_list_delete => {
+                        app.list_selected = app.lists.len(); // last entry (lists.len() == "All" + lists - 1)
+                    }
+                    KeyCode::Home if !app.confirm_list_delete => {
+                        app.list_selected = 0;
+                    }
+                    KeyCode::PageDown if !app.confirm_list_delete => {
+                        app.list_selected = (app.list_selected + 10).min(app.lists.len());
+                    }
+                    KeyCode::PageUp if !app.confirm_list_delete => {
+                        app.list_selected = app.list_selected.saturating_sub(10);
                     }
                     KeyCode::Enter if !app.confirm_list_delete => {
                         if app.list_selected == 0 {
@@ -423,6 +487,21 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         if app.move_selected > 0 {
                             app.move_selected -= 1;
                         }
+                    }
+                    KeyCode::Char('G') | KeyCode::End => {
+                        if !app.lists.is_empty() {
+                            app.move_selected = app.lists.len() - 1;
+                        }
+                    }
+                    KeyCode::Home => {
+                        app.move_selected = 0;
+                    }
+                    KeyCode::PageDown => {
+                        let last = app.lists.len().saturating_sub(1);
+                        app.move_selected = (app.move_selected + 10).min(last);
+                    }
+                    KeyCode::PageUp => {
+                        app.move_selected = app.move_selected.saturating_sub(10);
                     }
                     KeyCode::Enter => {
                         if let Some(r) = app.selected_reminder() {
@@ -588,7 +667,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
     let area = frame.area();
     let width = 44u16.min(area.width.saturating_sub(4));
-    let height = 19u16.min(area.height.saturating_sub(4));
+    let height = 23u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -600,6 +679,22 @@ fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
         Line::from(vec![
             Span::styled("  ↑↓ / j k  ", Style::default().fg(t.accent)),
             Span::styled("Navigate reminders", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  G / End    ", Style::default().fg(t.accent)),
+            Span::styled("Jump to bottom", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  g / Home   ", Style::default().fg(t.accent)),
+            Span::styled("Jump to top", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgDn/^D    ", Style::default().fg(t.accent)),
+            Span::styled("Page down", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp/^U    ", Style::default().fg(t.accent)),
+            Span::styled("Page up", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  ⏎ Enter   ", Style::default().fg(t.accent)),
@@ -622,7 +717,7 @@ fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
             Span::styled("Move to list", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
-            Span::styled("  g         ", Style::default().fg(t.accent)),
+            Span::styled("  f         ", Style::default().fg(t.accent)),
             Span::styled("Lists (n/r/d to manage)", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
