@@ -118,6 +118,16 @@ pub fn move_reminder(id: &str, to_list: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn uncomplete_reminder(id: &str) -> Result<()> {
+    run_bridge(&["uncomplete", id])?;
+    Ok(())
+}
+
+pub fn edit_reminder(id: &str, new_name: &str) -> Result<()> {
+    run_bridge(&["edit", id, new_name])?;
+    Ok(())
+}
+
 pub fn create_list(name: &str) -> Result<()> {
     run_bridge(&["create-list", name])?;
     Ok(())

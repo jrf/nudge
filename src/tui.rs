@@ -18,6 +18,7 @@ enum Mode {
     Browse,
     Search,
     Add,
+    Edit,
     Help,
     ThemePicker,
     ListPicker,
@@ -30,12 +31,67 @@ enum ListInputKind {
     Rename(String),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SortBy {
+    Default,
+    DueDate,
+    Priority,
+    ListName,
+}
+
+impl SortBy {
+    fn next(self) -> Self {
+        match self {
+            SortBy::Default => SortBy::DueDate,
+            SortBy::DueDate => SortBy::Priority,
+            SortBy::Priority => SortBy::ListName,
+            SortBy::ListName => SortBy::Default,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            SortBy::Default => "default",
+            SortBy::DueDate => "due date",
+            SortBy::Priority => "priority",
+            SortBy::ListName => "list",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum AddField {
+    Name,
+    DueDate,
+    Priority,
+    List,
+}
+
+impl AddField {
+    fn next(self) -> Self {
+        match self {
+            AddField::Name => AddField::DueDate,
+            AddField::DueDate => AddField::Priority,
+            AddField::Priority => AddField::List,
+            AddField::List => AddField::Name,
+        }
+    }
+    fn prev(self) -> Self {
+        match self {
+            AddField::Name => AddField::List,
+            AddField::DueDate => AddField::Name,
+            AddField::Priority => AddField::DueDate,
+            AddField::List => AddField::Priority,
+        }
+    }
+}
+
+const PRIORITIES: &[(i32, &str)] = &[(0, "none"), (9, "low"), (5, "medium"), (1, "high")];
+
 struct App {
     reminders: Vec<Reminder>,
     filtered: Vec<usize>,
     list_state: ListState,
     search_query: String,
-    add_input: String,
     mode: Mode,
     should_quit: bool,
     confirm_delete: bool,
@@ -48,6 +104,19 @@ struct App {
     move_selected: usize,
     input_buf: String,
     confirm_list_delete: bool,
+    show_completed: bool,
+    sort_by: SortBy,
+    today: String,
+    // Add form fields
+    add_field: AddField,
+    add_name: String,
+    add_due: String,
+    add_priority: usize,
+    add_list_idx: usize,
+    // Edit field
+    edit_input: String,
+    // Visible list height (updated each draw)
+    page_size: usize,
 }
 
 impl App {
@@ -66,7 +135,6 @@ impl App {
             filtered,
             list_state,
             search_query: String::new(),
-            add_input: String::new(),
             mode: Mode::Browse,
             should_quit: false,
             confirm_delete: false,
@@ -79,6 +147,16 @@ impl App {
             move_selected: 0,
             input_buf: String::new(),
             confirm_list_delete: false,
+            show_completed: false,
+            sort_by: SortBy::Default,
+            today: today_yyyy_mm_dd(),
+            add_field: AddField::Name,
+            add_name: String::new(),
+            add_due: String::new(),
+            add_priority: 0,
+            add_list_idx: 0,
+            edit_input: String::new(),
+            page_size: 20,
         }
     }
 
@@ -127,6 +205,38 @@ impl App {
             self.filtered = scored.into_iter().map(|(i, _)| i).collect();
         }
 
+        // Apply sort
+        match self.sort_by {
+            SortBy::Default => {}
+            SortBy::DueDate => {
+                self.filtered.sort_by(|&a, &b| {
+                    let da = &self.reminders[a].due_date;
+                    let db = &self.reminders[b].due_date;
+                    match (da.is_empty(), db.is_empty()) {
+                        (true, true) => std::cmp::Ordering::Equal,
+                        (true, false) => std::cmp::Ordering::Greater,
+                        (false, true) => std::cmp::Ordering::Less,
+                        (false, false) => da.cmp(db),
+                    }
+                });
+            }
+            SortBy::Priority => {
+                self.filtered.sort_by(|&a, &b| {
+                    let rank = |p: i32| match p {
+                        1 => 0,
+                        5 => 1,
+                        9 => 2,
+                        _ => 3,
+                    };
+                    rank(self.reminders[a].priority).cmp(&rank(self.reminders[b].priority))
+                });
+            }
+            SortBy::ListName => {
+                self.filtered
+                    .sort_by(|&a, &b| self.reminders[a].list.cmp(&self.reminders[b].list));
+            }
+        }
+
         if self.filtered.is_empty() {
             self.list_state.select(None);
         } else {
@@ -171,22 +281,53 @@ impl App {
 
     fn page_up(&mut self) {
         if let Some(selected) = self.list_state.selected() {
-            self.list_state.select(Some(selected.saturating_sub(10)));
+            self.list_state
+                .select(Some(selected.saturating_sub(self.page_size)));
         }
     }
 
     fn page_down(&mut self) {
         if let Some(selected) = self.list_state.selected() {
             let last = self.filtered.len().saturating_sub(1);
-            self.list_state.select(Some((selected + 10).min(last)));
+            self.list_state
+                .select(Some((selected + self.page_size).min(last)));
         }
     }
 
     fn refresh(&mut self) -> Result<()> {
-        self.reminders = reminders::list_reminders(None, false)?;
+        self.reminders = reminders::list_reminders(None, self.show_completed)?;
         self.apply_filter();
         Ok(())
     }
+
+    fn reset_add_form(&mut self) {
+        self.add_field = AddField::Name;
+        self.add_name.clear();
+        self.add_due.clear();
+        self.add_priority = 0;
+        self.add_list_idx = 0;
+    }
+}
+
+fn today_yyyy_mm_dd() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86400) as i64;
+    // Howard Hinnant's civil_from_days algorithm
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 pub fn run(theme: Theme) -> Result<()> {
@@ -222,6 +363,13 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 
             match app.mode {
                 Mode::Browse => match key.code {
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.page_down()
+                    }
+                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.page_up()
+                    }
+                    _ if key.modifiers.contains(KeyModifiers::CONTROL) => {}
                     KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                     KeyCode::Char('j') | KeyCode::Down => app.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_up(),
@@ -229,12 +377,6 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('g') | KeyCode::Home => app.move_to_top(),
                     KeyCode::PageDown => app.page_down(),
                     KeyCode::PageUp => app.page_up(),
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.page_down()
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.page_up()
-                    }
                     KeyCode::Char('/') => {
                         app.mode = Mode::Search;
                     }
@@ -268,8 +410,23 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('r') => {
                         let _ = app.refresh();
                     }
+                    KeyCode::Char('s') => {
+                        app.sort_by = app.sort_by.next();
+                        app.apply_filter();
+                    }
+                    KeyCode::Char('c') => {
+                        app.show_completed = !app.show_completed;
+                        let _ = app.refresh();
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(r) = app.selected_reminder() {
+                            app.edit_input = r.name.clone();
+                            app.mode = Mode::Edit;
+                        }
+                    }
                     KeyCode::Char('a') => {
-                        app.add_input.clear();
+                        app.reset_add_form();
+                        app.load_lists();
                         app.mode = Mode::Add;
                     }
                     KeyCode::Char('d') => {
@@ -290,11 +447,14 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     }
                     KeyCode::Enter => {
                         if let Some(r) = app.selected_reminder() {
-                            if !r.completed {
+                            if r.completed {
+                                let id = r.id.clone();
+                                let _ = reminders::uncomplete_reminder(&id);
+                            } else {
                                 let name = r.name.clone();
                                 let _ = reminders::complete_reminder(&name);
-                                let _ = app.refresh();
                             }
+                            let _ = app.refresh();
                         }
                     }
                     _ => {
@@ -324,22 +484,99 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                 },
                 Mode::Add => match key.code {
                     KeyCode::Esc => {
+                        app.reset_add_form();
                         app.mode = Mode::Browse;
-                        app.add_input.clear();
+                    }
+                    KeyCode::Tab => {
+                        app.add_field = app.add_field.next();
+                    }
+                    KeyCode::BackTab => {
+                        app.add_field = app.add_field.prev();
                     }
                     KeyCode::Enter => {
-                        if !app.add_input.is_empty() {
-                            let _ = reminders::add_reminder(&app.add_input, None, None, None);
+                        if !app.add_name.is_empty() {
+                            let list = if app.add_list_idx == 0 {
+                                None
+                            } else {
+                                Some(app.lists[app.add_list_idx - 1].as_str())
+                            };
+                            let due = if app.add_due.is_empty() {
+                                None
+                            } else {
+                                Some(app.add_due.as_str())
+                            };
+                            let pri_val = PRIORITIES[app.add_priority].0;
+                            let priority = if pri_val == 0 { None } else { Some(pri_val) };
+                            let _ = reminders::add_reminder(&app.add_name, list, due, priority);
                             let _ = app.refresh();
                         }
-                        app.add_input.clear();
+                        app.reset_add_form();
+                        app.mode = Mode::Browse;
+                    }
+                    KeyCode::Left => match app.add_field {
+                        AddField::Priority => {
+                            if app.add_priority > 0 {
+                                app.add_priority -= 1;
+                            }
+                        }
+                        AddField::List => {
+                            if app.add_list_idx > 0 {
+                                app.add_list_idx -= 1;
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Right => match app.add_field {
+                        AddField::Priority => {
+                            if app.add_priority + 1 < PRIORITIES.len() {
+                                app.add_priority += 1;
+                            }
+                        }
+                        AddField::List => {
+                            if app.add_list_idx < app.lists.len() {
+                                app.add_list_idx += 1;
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Backspace => match app.add_field {
+                        AddField::Name => {
+                            app.add_name.pop();
+                        }
+                        AddField::DueDate => {
+                            app.add_due.pop();
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(c) => match app.add_field {
+                        AddField::Name => app.add_name.push(c),
+                        AddField::DueDate => app.add_due.push(c),
+                        _ => {}
+                    },
+                    _ => {}
+                },
+                Mode::Edit => match key.code {
+                    KeyCode::Esc => {
+                        app.edit_input.clear();
+                        app.mode = Mode::Browse;
+                    }
+                    KeyCode::Enter => {
+                        if !app.edit_input.is_empty() {
+                            if let Some(r) = app.selected_reminder() {
+                                let id = r.id.clone();
+                                let _ =
+                                    reminders::edit_reminder(&id, &app.edit_input);
+                                let _ = app.refresh();
+                            }
+                        }
+                        app.edit_input.clear();
                         app.mode = Mode::Browse;
                     }
                     KeyCode::Backspace => {
-                        app.add_input.pop();
+                        app.edit_input.pop();
                     }
                     KeyCode::Char(c) => {
-                        app.add_input.push(c);
+                        app.edit_input.push(c);
                     }
                     _ => {}
                 },
@@ -559,52 +796,33 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    // Top bar — search or add input
-    match app.mode {
-        Mode::Add => {
-            let text = if app.add_input.is_empty() {
-                String::from("_")
-            } else {
-                format!("{}_", app.add_input)
-            };
-            let input = Paragraph::new(text)
-                .style(Style::default().fg(t.accent))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(t.border))
-                        .title(" New Reminder ")
-                        .title_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
-                );
-            frame.render_widget(input, chunks[0]);
-        }
-        _ => {
-            let search_text = if app.search_query.is_empty() {
-                match app.mode {
-                    Mode::Search => String::from("_"),
-                    _ => String::from("Press / to search"),
-                }
-            } else {
-                match app.mode {
-                    Mode::Search => format!("{}_", app.search_query),
-                    _ => app.search_query.clone(),
-                }
-            };
+    // Top bar — search input
+    {
+        let search_text = if app.search_query.is_empty() {
+            match app.mode {
+                Mode::Search => String::from("_"),
+                _ => String::from("Press / to search"),
+            }
+        } else {
+            match app.mode {
+                Mode::Search => format!("{}_", app.search_query),
+                _ => app.search_query.clone(),
+            }
+        };
 
-            let search_style = match app.mode {
-                Mode::Search => Style::default().fg(t.accent),
-                _ => Style::default().fg(t.text_muted),
-            };
+        let search_style = match app.mode {
+            Mode::Search => Style::default().fg(t.accent),
+            _ => Style::default().fg(t.text_muted),
+        };
 
-            let search = Paragraph::new(search_text).style(search_style).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(t.border))
-                    .title(" Search ")
-                    .title_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
-            );
-            frame.render_widget(search, chunks[0]);
-        }
+        let search = Paragraph::new(search_text).style(search_style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(t.border))
+                .title(" Search ")
+                .title_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
+        );
+        frame.render_widget(search, chunks[0]);
     }
 
     // Reminder list
@@ -626,10 +844,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 _ => {}
             }
             if !r.due_date.is_empty() {
-                spans.push(Span::styled(
-                    format!("  ({})", r.due_date),
-                    Style::default().fg(t.text_muted),
-                ));
+                let due_style = if !r.completed && r.due_date.as_str() < app.today.as_str() {
+                    Style::default().fg(t.error)
+                } else {
+                    Style::default().fg(t.text_muted)
+                };
+                spans.push(Span::styled(format!("  ({})", r.due_date), due_style));
             }
             ListItem::new(Line::from(spans))
         })
@@ -655,6 +875,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         )
         .highlight_symbol("▸ ");
 
+    // Update page size from actual visible area (subtract 2 for borders)
+    app.page_size = chunks[1].height.saturating_sub(2) as usize;
     frame.render_stateful_widget(list, chunks[1], &mut app.list_state);
 
     // Status bar
@@ -667,12 +889,26 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Span::styled(" no", Style::default().fg(t.text)),
         ])
     } else {
-        Line::from(vec![
-            Span::styled(" ?", Style::default().fg(t.accent)),
+        let mut spans = vec![Span::styled(
+            format!(" {}/{}", app.filtered.len(), app.reminders.len()),
+            Style::default().fg(t.text_muted),
+        )];
+        if app.show_completed {
+            spans.push(Span::styled(" +done", Style::default().fg(t.text_dim)));
+        }
+        if app.sort_by != SortBy::Default {
+            spans.push(Span::styled(
+                format!(" [{}]", app.sort_by.label()),
+                Style::default().fg(t.text_dim),
+            ));
+        }
+        spans.extend([
+            Span::styled("  ?", Style::default().fg(t.accent)),
             Span::styled(" help  ", Style::default().fg(t.text_dim)),
             Span::styled("q", Style::default().fg(t.accent)),
             Span::styled(" quit", Style::default().fg(t.text_dim)),
-        ])
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(Paragraph::new(status), chunks[2]);
 
@@ -682,6 +918,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Mode::ThemePicker => draw_theme_picker(frame, app),
         Mode::ListPicker | Mode::ListInput(_) => draw_list_picker(frame, app),
         Mode::MovePicker => draw_move_picker(frame, app),
+        Mode::Add => draw_add_form(frame, app),
+        Mode::Edit => draw_edit_popup(frame, app),
         _ => {}
     }
 }
@@ -689,7 +927,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
     let area = frame.area();
     let width = 44u16.min(area.width.saturating_sub(4));
-    let height = 23u16.min(area.height.saturating_sub(4));
+    let height = 27u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup = Rect::new(x, y, width, height);
@@ -711,20 +949,24 @@ fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
             Span::styled("Jump to top", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
-            Span::styled("  PgDn/^D    ", Style::default().fg(t.accent)),
+            Span::styled("  PgDn / ^F  ", Style::default().fg(t.accent)),
             Span::styled("Page down", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
-            Span::styled("  PgUp/^U    ", Style::default().fg(t.accent)),
+            Span::styled("  PgUp / ^B  ", Style::default().fg(t.accent)),
             Span::styled("Page up", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  ⏎ Enter   ", Style::default().fg(t.accent)),
-            Span::styled("Complete selected reminder", Style::default().fg(t.text)),
+            Span::styled("Toggle complete/incomplete", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  a         ", Style::default().fg(t.accent)),
             Span::styled("Add new reminder", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  e         ", Style::default().fg(t.accent)),
+            Span::styled("Edit selected reminder", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  r         ", Style::default().fg(t.accent)),
@@ -741,6 +983,14 @@ fn draw_help(frame: &mut ratatui::Frame, t: &Theme) {
         Line::from(vec![
             Span::styled("  f         ", Style::default().fg(t.accent)),
             Span::styled("Lists (n/r/d to manage)", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  s         ", Style::default().fg(t.accent)),
+            Span::styled("Cycle sort mode", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled("  c         ", Style::default().fg(t.accent)),
+            Span::styled("Toggle completed", Style::default().fg(t.text)),
         ]),
         Line::from(vec![
             Span::styled("  t         ", Style::default().fg(t.accent)),
@@ -953,4 +1203,130 @@ fn draw_move_picker(frame: &mut ratatui::Frame, app: &App) {
         .highlight_symbol("▸ ");
 
     frame.render_stateful_widget(list, popup, &mut state);
+}
+
+fn draw_add_form(frame: &mut ratatui::Frame, app: &App) {
+    let t = &app.theme;
+    let area = frame.area();
+    let width = 42u16.min(area.width.saturating_sub(4));
+    let height = 11u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let active = Style::default().fg(t.accent);
+    let inactive = Style::default().fg(t.text_dim);
+
+    let list_label = if app.add_list_idx == 0 {
+        "Default".to_string()
+    } else {
+        app.lists
+            .get(app.add_list_idx - 1)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let pri_label = PRIORITIES[app.add_priority].1;
+
+    let cursor = |field: AddField, val: &str| -> String {
+        if app.add_field == field {
+            format!("{val}_")
+        } else {
+            val.to_string()
+        }
+    };
+
+    let fields: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Name:     ",
+                if app.add_field == AddField::Name { active } else { inactive },
+            ),
+            Span::styled(
+                cursor(AddField::Name, &app.add_name),
+                Style::default().fg(t.text_bright),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Due:      ",
+                if app.add_field == AddField::DueDate { active } else { inactive },
+            ),
+            Span::styled(
+                cursor(AddField::DueDate, &app.add_due),
+                Style::default().fg(t.text_bright),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Priority: ",
+                if app.add_field == AddField::Priority { active } else { inactive },
+            ),
+            Span::styled(
+                format!("< {pri_label} >"),
+                if app.add_field == AddField::Priority {
+                    Style::default().fg(t.text_bright)
+                } else {
+                    Style::default().fg(t.text)
+                },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  List:     ",
+                if app.add_field == AddField::List { active } else { inactive },
+            ),
+            Span::styled(
+                format!("< {list_label} >"),
+                if app.add_field == AddField::List {
+                    Style::default().fg(t.text_bright)
+                } else {
+                    Style::default().fg(t.text)
+                },
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Tab", Style::default().fg(t.accent)),
+            Span::styled(" next  ", Style::default().fg(t.text_dim)),
+            Span::styled("Enter", Style::default().fg(t.accent)),
+            Span::styled(" save  ", Style::default().fg(t.text_dim)),
+            Span::styled("Esc", Style::default().fg(t.accent)),
+            Span::styled(" cancel", Style::default().fg(t.text_dim)),
+        ]),
+    ];
+
+    let form = Paragraph::new(fields).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" New Reminder ")
+            .title_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+            .border_style(Style::default().fg(t.accent)),
+    );
+    frame.render_widget(form, popup);
+}
+
+fn draw_edit_popup(frame: &mut ratatui::Frame, app: &App) {
+    let t = &app.theme;
+    let area = frame.area();
+    let width = 42u16.min(area.width.saturating_sub(4));
+    let height = 5u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let edit = Paragraph::new(format!("{}_", app.edit_input))
+        .style(Style::default().fg(t.text_bright))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Edit Reminder ")
+                .title_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+                .border_style(Style::default().fg(t.accent)),
+        );
+    frame.render_widget(edit, popup);
 }

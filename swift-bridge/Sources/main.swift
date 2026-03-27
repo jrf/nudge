@@ -226,6 +226,47 @@ func deleteList(name: String) {
     print("ok")
 }
 
+func uncompleteReminder(id: String) {
+    let predicate = store.predicateForReminders(in: nil)
+    let sem = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var results: [EKReminder] = []
+    store.fetchReminders(matching: predicate) { reminders in
+        results = reminders ?? []
+        sem.signal()
+    }
+    sem.wait()
+
+    guard let r = results.first(where: { $0.calendarItemIdentifier == id }) else {
+        fputs("Error: no reminder with id '\(id)'\n", stderr)
+        exit(1)
+    }
+
+    r.isCompleted = false
+    r.completionDate = nil
+    try! store.save(r, commit: true)
+    print("ok")
+}
+
+func editReminder(id: String, newName: String) {
+    let predicate = store.predicateForReminders(in: nil)
+    let sem = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var results: [EKReminder] = []
+    store.fetchReminders(matching: predicate) { reminders in
+        results = reminders ?? []
+        sem.signal()
+    }
+    sem.wait()
+
+    guard let r = results.first(where: { $0.calendarItemIdentifier == id }) else {
+        fputs("Error: no reminder with id '\(id)'\n", stderr)
+        exit(1)
+    }
+
+    r.title = newName
+    try! store.save(r, commit: true)
+    print("ok")
+}
+
 // --- Main ---
 
 guard requestAccess() else {
@@ -319,6 +360,18 @@ case "delete-list":
         exit(1)
     }
     deleteList(name: args[1])
+case "uncomplete":
+    guard args.count > 1 else {
+        fputs("Usage: nudge-bridge uncomplete <id>\n", stderr)
+        exit(1)
+    }
+    uncompleteReminder(id: args[1])
+case "edit":
+    guard args.count > 2 else {
+        fputs("Usage: nudge-bridge edit <id> <new-name>\n", stderr)
+        exit(1)
+    }
+    editReminder(id: args[1], newName: args[2])
 default:
     fputs("Unknown command: \(command)\n", stderr)
     exit(1)
