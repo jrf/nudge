@@ -3,6 +3,8 @@ use crate::reminders::{self, Reminder};
 use crate::theme::{self, Theme};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -87,23 +89,43 @@ impl App {
     }
 
     fn apply_filter(&mut self) {
-        let query = self.search_query.to_lowercase();
-        self.filtered = self
+        // Pre-filter by active list
+        let candidates: Vec<usize> = self
             .reminders
             .iter()
             .enumerate()
             .filter(|(_, r)| {
                 if let Some(ref active) = self.active_list {
-                    if r.list != *active {
-                        return false;
-                    }
+                    r.list == *active
+                } else {
+                    true
                 }
-                query.is_empty()
-                    || r.name.to_lowercase().contains(&query)
-                    || r.list.to_lowercase().contains(&query)
             })
             .map(|(i, _)| i)
             .collect();
+
+        if self.search_query.is_empty() {
+            self.filtered = candidates;
+        } else {
+            let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+            let pattern = Pattern::parse(
+                &self.search_query,
+                CaseMatching::Ignore,
+                Normalization::Smart,
+            );
+            let mut buf = Vec::new();
+            let mut scored: Vec<(usize, u32)> = candidates
+                .into_iter()
+                .filter_map(|i| {
+                    let r = &self.reminders[i];
+                    let haystack = format!("{} {}", r.list, r.name);
+                    let score = pattern.score(nucleo_matcher::Utf32Str::new(&haystack, &mut buf), &mut matcher)?;
+                    Some((i, score))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            self.filtered = scored.into_iter().map(|(i, _)| i).collect();
+        }
 
         if self.filtered.is_empty() {
             self.list_state.select(None);
